@@ -1,0 +1,27 @@
+name: Update README on release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update README (if slugs present)
+        if: ${{ vars.MARKETPLACE_POST_SLUG != '' || vars.MARKETPLACE_ARTIFACTS_SLUG != '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MARKETPLACE_POST_SLUG: ${{ vars.MARKETPLACE_POST_SLUG }}
+          MARKETPLACE_ARTIFACTS_SLUG: ${{ vars.MARKETPLACE_ARTIFACTS_SLUG }}
+        run: |
+          bash scripts/ghops/tools/update-external-actions-readme.sh \
+            --repo "$GITHUB_REPOSITORY" \
+            --post-slug "${MARKETPLACE_POST_SLUG}" \
+            --artifacts-slug "${MARKETPLACE_ARTIFACTS_SLUG}" \
+            --max-wait 30 --quiet
