@@ -1,0 +1,29 @@
+name: Artifacts Metadata Action CI
+
+on:
+  push:
+    paths:
+      - '.github/actions/load-artifacts-meta/**'
+      - '.github/workflows/artifacts-meta-ci.yml'
+  pull_request:
+    paths:
+      - '.github/actions/load-artifacts-meta/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run artifacts loader (dry-run)
+        id: meta
+        uses: ./.github/actions/load-artifacts-meta
+        with:
+          prefer_cache: true
+          output_path: telemetry/artifacts_meta.json
+      - name: Validate outputs
+        run: |
+          test -f telemetry/artifacts_meta.json || { echo 'missing output'; exit 1; }
+          echo "count=$(jq -r '.artifacts|length' telemetry/artifacts_meta.json)"

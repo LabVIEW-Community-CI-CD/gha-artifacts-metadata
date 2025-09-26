@@ -1,0 +1,103 @@
+name: "Load run artifacts metadata"
+description: "Loads and normalizes artifacts metadata for a workflow run; reads cache file when present or falls back to GitHub API"
+author: "LabVIEW-Community-CI-CD/x-cli"
+inputs:
+  repo:
+    description: "owner/name repository (defaults to github.repository)"
+    required: false
+    default: ""
+  run_id:
+    description: "Workflow run id (defaults to github.run_id)"
+    required: false
+    default: ""
+  token:
+    description: "GitHub token (defaults to GITHUB_TOKEN env)"
+    required: false
+    default: ""
+  prefer_cache:
+    description: "Prefer cached files at $RUNNER_TEMP/artifacts_meta.json"
+    required: false
+    default: "true"
+  output_path:
+    description: "Optional path to write normalized metadata JSON"
+    required: false
+    default: ""
+outputs:
+  json:
+    description: "Normalized JSON metadata { artifacts: [ { name, archive_download_url, size_in_bytes, expired, expires_at } ] }"
+    value: ${{ steps.emit.outputs.json }}
+  count:
+    description: "Artifact count"
+    value: ${{ steps.emit.outputs.count }}
+runs:
+  using: "composite"
+  steps:
+    - id: load-sh
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token || env.GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+        repo="${{ inputs.repo || github.repository }}"
+        run_id="${{ inputs.run_id || github.run_id }}"
+        prefer_cache='${{ inputs.prefer_cache }}'
+        cache_meta="$RUNNER_TEMP/artifacts_meta.json"
+        raw_json="$RUNNER_TEMP/artifacts.json"
+        json=''
+        if [[ "$prefer_cache" == 'true' && -f "$cache_meta" ]]; then
+          json=$(cat "$cache_meta")
+        else
+          api_url="https://api.github.com/repos/${repo}/actions/runs/${run_id}/artifacts"
+          curl -sSf -H "authorization: token ${GITHUB_TOKEN}" -H 'accept: application/vnd.github+json' "$api_url" -o "$raw_json"
+          jq '{artifacts: (.artifacts | map({name, archive_download_url, size_in_bytes, expired, expires_at}))}' "$raw_json" > "$cache_meta"
+          json=$(cat "$cache_meta")
+        fi
+        if [[ -n "${{ inputs.output_path }}" ]]; then
+          mkdir -p "$(dirname '${{ inputs.output_path }}')"
+          printf '%s' "$json" > "${{ inputs.output_path }}"
+        fi
+        # Stash for emit step
+        printf '%s' "$json" > "$RUNNER_TEMP/_artifacts_meta_out.json"
+    - id: load-ps
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        GITHUB_TOKEN: ${{ inputs.token || env.GITHUB_TOKEN }}
+      run: |
+        Set-StrictMode -Version Latest
+        $repo = if ('${{ inputs.repo }}') { '${{ inputs.repo }}' } else { '${{ github.repository }}' }
+        $run  = if ('${{ inputs.run_id }}') { '${{ inputs.run_id }}' } else { '${{ github.run_id }}' }
+        $prefer = '${{ inputs.prefer_cache }}'
+        $cacheMeta = Join-Path $env:RUNNER_TEMP 'artifacts_meta.json'
+        $raw = Join-Path $env:RUNNER_TEMP 'artifacts.json'
+        if ($prefer -eq 'true' -and (Test-Path $cacheMeta)) {
+          $json = Get-Content -LiteralPath $cacheMeta -Raw
+        } else {
+          $url = "https://api.github.com/repos/$repo/actions/runs/$run/artifacts"
+          $headers = @{ Authorization = "token $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json' }
+          Invoke-RestMethod -Uri $url -Headers $headers -ErrorAction Stop | ConvertTo-Json -Depth 6 | Out-File -Encoding utf8NoBOM -FilePath $raw
+          $norm = (Get-Content -LiteralPath $raw -Raw | ConvertFrom-Json)
+          $arts = @()
+          foreach ($a in $norm.artifacts) { $arts += @{ name=$a.name; archive_download_url=$a.archive_download_url; size_in_bytes=$a.size_in_bytes; expired=$a.expired; expires_at=$a.expires_at } }
+          $out = @{ artifacts = $arts }
+          $json = ($out | ConvertTo-Json -Depth 6)
+          $json | Out-File -Encoding utf8NoBOM -FilePath $cacheMeta
+        }
+        if ('${{ inputs.output_path }}') {
+          $dir = Split-Path -Parent -Path '${{ inputs.output_path }}'
+          if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+          $json | Out-File -Encoding utf8NoBOM -FilePath '${{ inputs.output_path }}'
+        }
+        Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP '_artifacts_meta_out.json') -Value $json -Encoding utf8NoBOM
+    - id: emit
+      shell: bash
+      run: |
+        json=$(cat "$RUNNER_TEMP/_artifacts_meta_out.json" 2>/dev/null || echo '{"artifacts":[]}')
+        count=$(printf '%s' "$json" | jq -r '.artifacts|length')
+        {
+          echo 'json<<JSON'
+          printf '%s\n' "$json"
+          echo 'JSON'
+          echo "count=$count"
+        } >> "$GITHUB_OUTPUT"
